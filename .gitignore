@@ -1,0 +1,5 @@
+# Never commit a live EasyTier configuration or secrets.
+*.conf
+*.secret
+.env
+config/
