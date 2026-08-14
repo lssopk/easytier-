@@ -25,6 +25,27 @@ curl -fsSL https://raw.githubusercontent.com/lssopk/easytier-/main/install-easyt
 
 脚本不会把密码输出到终端，也不会把网络配置提交到这个仓库。
 
+## 快捷启动菜单
+
+安装完成后执行：
+
+```bash
+sudo easytier-menu
+```
+
+菜单可以启动、停止、重启 EasyTier，查看状态、节点、对等节点和实时日志，也可以进入 LAN/WAN 转发配置。
+
+转发配置支持四个独立开关：
+
+- EasyTier 虚拟网络 → LAN
+- EasyTier 虚拟网络 → WAN
+- LAN → EasyTier 虚拟网络
+- WAN → EasyTier 虚拟网络
+
+首次配置时，菜单会自动尝试识别 `easytier0`、`br-lan` 和默认路由网卡，也可以手动填写网卡名称。规则保存于 `/etc/easytier/firewall.conf`，并通过 nftables 或 iptables 应用；systemd/OpenRC 重启后会自动恢复。菜单管理的转发规则默认关闭，不会改变原有系统防火墙规则。
+
+这些开关控制的是 Linux 内核的 `FORWARD` 防火墙流量；如果要把虚拟网络作为 LAN/WAN 网关使用，还需要另外配置 EasyTier 子网代理、退出节点或系统路由/NAT。
+
 ## 默认节点模式
 
 默认选择“普通加入节点”。该模式会：
