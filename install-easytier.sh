@@ -4,7 +4,7 @@ set -Eeuo pipefail
 IFS=$'\n\t'
 umask 077
 
-readonly SCRIPT_VERSION="0.1.1"
+readonly SCRIPT_VERSION="0.2.0"
 readonly EASYTIER_REPOSITORY="EasyTier/EasyTier"
 readonly EASYTIER_RELEASE_API="https://api.github.com/repos/${EASYTIER_REPOSITORY}/releases/latest"
 readonly SERVICE_NAME="easytier-node"
@@ -14,6 +14,11 @@ readonly CONFIG_FILE="${EASYTIER_CONFIG_DIR:-/etc/easytier}/easytier.conf"
 readonly CONFIG_BACKUP_DIR="${EASYTIER_CONFIG_DIR:-/etc/easytier}/backup"
 readonly SYSTEMD_UNIT="/etc/systemd/system/${SERVICE_NAME}.service"
 readonly OPENRC_SCRIPT="/etc/init.d/${SERVICE_NAME}"
+readonly MENU_PATH="/usr/local/bin/easytier-menu"
+readonly MENU_RAW_URL="https://raw.githubusercontent.com/lssopk/easytier-/main/easytier-menu.sh"
+readonly FIREWALL_CONFIG="${EASYTIER_CONFIG_DIR:-/etc/easytier}/firewall.conf"
+readonly FIREWALL_SYSTEMD_UNIT="/etc/systemd/system/easytier-firewall.service"
+readonly FIREWALL_OPENRC_SCRIPT="/etc/init.d/easytier-firewall"
 
 RED=$'\033[1;31m'
 GREEN=$'\033[1;32m'
@@ -26,6 +31,7 @@ SKIP_DEPENDENCIES=0
 FORCE_UPDATE=0
 ALLOW_EMPTY_SECRET=0
 NO_PEER=0
+MENU_REQUESTED=0
 AUTO_FIREWALL="${EASYTIER_AUTO_FIREWALL:-1}"
 GITHUB_PROXY="${EASYTIER_GITHUB_PROXY:-}"
 
@@ -70,6 +76,7 @@ EasyTier Linux 一键安装器
 
 选项:
   --non-interactive       使用环境变量运行，不进行交互式提问
+  --menu                  打开已安装的 EasyTier 快捷启动菜单
   --force-update          即使已有 EasyTier 二进制也下载最新版本
   --skip-deps             不自动安装 curl/unzip/iproute2 等依赖
   --allow-empty-secret    允许空网络密码（不推荐）
@@ -131,6 +138,9 @@ parse_args() {
     case "$1" in
       --non-interactive)
         NON_INTERACTIVE=1
+        ;;
+      --menu)
+        MENU_REQUESTED=1
         ;;
       --force-update)
         FORCE_UPDATE=1
@@ -810,7 +820,7 @@ write_config() {
     fi
     printf '[flags]\n'
     printf 'default_protocol = "udp"\n'
-    printf 'dev_name = ""\n'
+    printf 'dev_name = "easytier0"\n'
     printf 'enable_encryption = true\n'
     printf 'enable_ipv6 = true\n'
     printf 'mtu = 1380\n'
@@ -883,6 +893,92 @@ EOF
   rc-update add "$SERVICE_NAME" default >/dev/null
 }
 
+install_management_menu() {
+  local menu_script=""
+  local script_dir=""
+  local local_menu=""
+
+  script_dir="$(dirname "${BASH_SOURCE[0]}")"
+  local_menu="${script_dir}/easytier-menu.sh"
+  if [ -r "$local_menu" ]; then
+    menu_script="$(<"$local_menu")"
+  else
+    log "下载快捷启动菜单。"
+    menu_script="$(fetch_url "$MENU_RAW_URL")" || die "无法下载快捷启动菜单：$MENU_RAW_URL"
+  fi
+
+  menu_script="${menu_script//__EASYTIER_CONFIG_DIR__/$CONFIG_DIR}"
+  install -d -m 0755 /usr/local/bin
+  printf '%s\n' "$menu_script" > "$MENU_PATH"
+  chmod 0755 "$MENU_PATH"
+  bash -n "$MENU_PATH" || die "快捷启动菜单语法检查失败。"
+  success "快捷启动菜单已安装：${MENU_PATH}"
+}
+
+write_firewall_defaults() {
+  install -d -m 0700 "$CONFIG_DIR"
+  if [ ! -f "$FIREWALL_CONFIG" ]; then
+    cat > "$FIREWALL_CONFIG" <<EOF
+# Managed by easytier-menu.
+FIREWALL_ENABLED=0
+EASYTIER_IFACE=easytier0
+LAN_IFACES=
+WAN_IFACES=
+ET_TO_LAN=0
+ET_TO_WAN=0
+LAN_TO_ET=0
+WAN_TO_ET=0
+EOF
+  fi
+  chmod 0600 "$FIREWALL_CONFIG"
+}
+
+write_firewall_service() {
+  if [ "$INIT_SYSTEM" = "systemd" ]; then
+    cat > "$FIREWALL_SYSTEMD_UNIT" <<EOF
+[Unit]
+Description=EasyTier LAN/WAN forwarding rules
+Wants=network-online.target
+After=network-online.target ${SERVICE_NAME}.service
+
+[Service]
+Type=oneshot
+ExecStart=${MENU_PATH} --apply-firewall
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+EOF
+    systemctl daemon-reload
+    systemctl enable "easytier-firewall.service" >/dev/null
+  elif [ "$INIT_SYSTEM" = "openrc" ]; then
+    cat > "$FIREWALL_OPENRC_SCRIPT" <<EOF
+#!/sbin/openrc-run
+
+description="EasyTier LAN/WAN forwarding rules"
+
+depend() {
+    need net
+    after ${SERVICE_NAME}
+}
+
+start() {
+    ebegin "Applying EasyTier forwarding rules"
+    ${MENU_PATH} --apply-firewall
+    eend \$?
+}
+EOF
+    chmod 0755 "$FIREWALL_OPENRC_SCRIPT"
+    rc-update add easytier-firewall default >/dev/null
+  fi
+}
+
+install_management_components() {
+  install_management_menu
+  write_firewall_defaults
+  write_firewall_service
+}
+
 configure_firewall() {
   [ "$NODE_ROLE" = "relay" ] || return 0
   [ "$AUTO_FIREWALL" = "1" ] || {
@@ -922,6 +1018,9 @@ start_service() {
     sleep 2
     rc-service "$SERVICE_NAME" status || die "EasyTier OpenRC 服务启动失败。"
   fi
+  if [ -x "$MENU_PATH" ]; then
+    "$MENU_PATH" --apply-firewall || warn "EasyTier 已启动，但 LAN/WAN 转发规则暂未应用。可稍后执行 easytier-menu。"
+  fi
   success "EasyTier 已启动，并已配置为开机启动。"
 }
 
@@ -941,8 +1040,11 @@ show_summary() {
     printf '本地监听：关闭（不会抢占共享节点的 11010）\n'
   fi
   printf '配置文件：%s\n' "$CONFIG_FILE"
+  printf '快捷菜单：%s\n' "$MENU_PATH"
+  printf '转发配置：%s\n' "$FIREWALL_CONFIG"
   printf '安装目录：%s\n' "$INSTALL_DIR"
   printf '\n管理命令：\n'
+  printf '  easytier-menu\n'
   if [ "$INIT_SYSTEM" = "systemd" ]; then
     printf '  systemctl status %s\n' "$SERVICE_NAME"
     printf '  systemctl restart %s\n' "$SERVICE_NAME"
@@ -966,6 +1068,10 @@ show_summary() {
 
 main() {
   parse_args "$@"
+  if [ "$MENU_REQUESTED" -eq 1 ]; then
+    [ -x "$MENU_PATH" ] || die "尚未安装快捷菜单：$MENU_PATH"
+    exec "$MENU_PATH"
+  fi
   normalise_proxy
   require_root
   detect_os
@@ -979,6 +1085,7 @@ main() {
   collect_network_config
   check_relay_port
   write_config
+  install_management_components
   configure_firewall
   start_service
   show_summary
