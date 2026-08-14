@@ -21,7 +21,7 @@ curl -fsSL https://raw.githubusercontent.com/lssopk/easytier-/main/install-easyt
 1. 网络名称
 2. 网络密码
 3. 节点模式
-4. 初始节点地址、协议和端口
+4. 初始节点地址、协议和端口（默认 TCP+UDP 双协议）
 
 脚本不会把密码输出到终端，也不会把网络配置提交到这个仓库。
 
@@ -51,12 +51,14 @@ sudo easytier-menu
 默认选择“普通加入节点”。该模式会：
 
 - 使用 `-d`/DHCP 自动分配 EasyTier 虚拟 IP；
-- 通过 `tcp://初始节点:端口` 主动加入网络；
+- 同时通过 `tcp://初始节点:端口` 和 `udp://初始节点:端口` 主动加入网络；
 - 使用 `--no-listener` 关闭本机监听；
 - 不抢占共享节点常用的 11010 端口；
 - 通过独立的 `easytier-node` 服务持久运行。
 
 这适合把一台公网 VPS 作为共享节点、其他服务器和 Windows 设备作为普通加入节点的场景。
+
+TCP+UDP 双协议会为同一个初始节点配置两条连接，EasyTier 可根据网络可用性和路由情况选择隧道；它不是把两条连接做带宽叠加。如果 UDP 被 NAT、运营商或防火墙阻断，TCP 连接仍可用于加入网络。需要单协议时，在安装提示中输入 `tcp` 或 `udp`。
 
 如果当前服务器本身要作为共享/公网节点，启动时选择“共享/公网节点”。此模式会监听 TCP 和 UDP 端口，默认 11010，并尝试配置本机的 ufw 或 firewalld。VPS 面板中的云防火墙仍需要手动放行相同端口。
 
@@ -102,7 +104,7 @@ sudo env \
   EASYTIER_NETWORK_SECRET='replace-with-your-secret' \
   EASYTIER_PEER_HOST='relay.example.com' \
   EASYTIER_PEER_PORT='11010' \
-  EASYTIER_PEER_PROTOCOL='tcp' \
+  EASYTIER_PEER_PROTOCOL='tcp+udp' \
   bash /tmp/install-easytier.sh --non-interactive
 ```
 
