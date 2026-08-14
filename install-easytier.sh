@@ -4,7 +4,7 @@ set -Eeuo pipefail
 IFS=$'\n\t'
 umask 077
 
-readonly SCRIPT_VERSION="0.2.0"
+readonly SCRIPT_VERSION="0.2.1"
 readonly EASYTIER_REPOSITORY="EasyTier/EasyTier"
 readonly EASYTIER_RELEASE_API="https://api.github.com/repos/${EASYTIER_REPOSITORY}/releases/latest"
 readonly SERVICE_NAME="easytier-node"
@@ -39,7 +39,7 @@ NETWORK_NAME="${EASYTIER_NETWORK_NAME:-}"
 NETWORK_SECRET="${EASYTIER_NETWORK_SECRET:-}"
 PEER_HOST="${EASYTIER_PEER_HOST:-}"
 PEER_PORT="${EASYTIER_PEER_PORT:-11010}"
-PEER_PROTOCOL="${EASYTIER_PEER_PROTOCOL:-tcp}"
+PEER_PROTOCOL="${EASYTIER_PEER_PROTOCOL:-tcp+udp}"
 NODE_ROLE="${EASYTIER_ROLE:-client}"
 LISTEN_PORT="${EASYTIER_LISTEN_PORT:-11010}"
 NODE_HOSTNAME="${EASYTIER_HOSTNAME:-}"
@@ -60,6 +60,7 @@ ASSET_NAME=""
 EXPECTED_DIGEST=""
 CORE_VERSION=""
 PEER_URI=""
+PEER_URI_SECONDARY=""
 
 usage() {
   cat <<'EOF'
@@ -86,7 +87,7 @@ EasyTier Linux 一键安装器
   --network-secret PASS   网络密码；命令行参数可能出现在 shell 历史中
   --peer-host HOST        初始节点地址
   --peer-port PORT        初始节点端口，默认 11010
-  --peer-protocol PROTO   初始节点协议，默认 tcp
+  --peer-protocol PROTO   初始节点协议，默认 tcp+udp；也可选 tcp 或 udp
   --role client|relay     普通节点或共享/公网节点，默认 client
   --listen-port PORT      relay 模式监听端口，默认 11010
   --hostname NAME         EasyTier 虚拟网络中的主机名
@@ -690,10 +691,10 @@ collect_network_config() {
       PEER_URI="$PEER_HOST"
     else
       if [ "$NON_INTERACTIVE" -eq 0 ] && [ "${EASYTIER_PEER_PROTOCOL:-}" = "" ]; then
-        PEER_PROTOCOL="$(ask_value "初始节点协议" "$PEER_PROTOCOL")"
+        PEER_PROTOCOL="$(ask_value "初始节点协议（tcp+udp/tcp/udp）" "$PEER_PROTOCOL")"
       fi
       case "$PEER_PROTOCOL" in
-        tcp|udp|quic|ws|wss|faketcp) ;;
+        tcp+udp|tcp|udp|quic|ws|wss|faketcp) ;;
         *) die "不支持的初始节点协议：$PEER_PROTOCOL。" ;;
       esac
       if [ "$NON_INTERACTIVE" -eq 0 ] && [ -z "${EASYTIER_PEER_PORT:-}" ]; then
@@ -703,9 +704,15 @@ collect_network_config() {
       if [[ "$PEER_HOST" == *:* && "$PEER_HOST" != \[*\] ]]; then
         PEER_HOST="[${PEER_HOST}]"
       fi
-      PEER_URI="${PEER_PROTOCOL}://${PEER_HOST}:${PEER_PORT}"
+      if [ "$PEER_PROTOCOL" = "tcp+udp" ]; then
+        PEER_URI="tcp://${PEER_HOST}:${PEER_PORT}"
+        PEER_URI_SECONDARY="udp://${PEER_HOST}:${PEER_PORT}"
+      else
+        PEER_URI="${PEER_PROTOCOL}://${PEER_HOST}:${PEER_PORT}"
+      fi
     fi
     [[ "$PEER_URI" != *[[:space:]]* ]] || die "初始节点地址不能包含空格。"
+    [[ "$PEER_URI_SECONDARY" != *[[:space:]]* ]] || die "初始节点地址不能包含空格。"
   fi
 
   if [ -z "$NODE_HOSTNAME" ]; then
@@ -817,6 +824,10 @@ write_config() {
     if [ -n "$PEER_URI" ]; then
       printf '[[peer]]\n'
       printf 'uri = "%s"\n\n' "$(toml_escape "$PEER_URI")"
+    fi
+    if [ -n "$PEER_URI_SECONDARY" ]; then
+      printf '[[peer]]\n'
+      printf 'uri = "%s"\n\n' "$(toml_escape "$PEER_URI_SECONDARY")"
     fi
     printf '[flags]\n'
     printf 'default_protocol = "udp"\n'
@@ -1031,6 +1042,9 @@ show_summary() {
   printf '网络名称：%s\n' "$NETWORK_NAME"
   if [ -n "$PEER_URI" ]; then
     printf '初始节点：%s\n' "$PEER_URI"
+    if [ -n "$PEER_URI_SECONDARY" ]; then
+      printf '          %s\n' "$PEER_URI_SECONDARY"
+    fi
   else
     printf '初始节点：未设置\n'
   fi
