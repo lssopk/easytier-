@@ -7,8 +7,13 @@
 在目标服务器上执行：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/lssopk/easytier-/main/install-easytier.sh -o /tmp/install-easytier.sh
-sudo bash /tmp/install-easytier.sh
+curl -fsSL https://raw.githubusercontent.com/lssopk/easytier-/main/install-easytier.sh | sudo bash
+```
+
+如果当前已经是 root 用户，直接执行：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/lssopk/easytier-/main/install-easytier.sh | bash
 ```
 
 随后按提示填写：
