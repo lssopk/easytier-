@@ -456,26 +456,22 @@ extract_release_tag() {
 
 extract_asset_digest() {
   local wanted="$1"
-  local names=""
-  local digests=""
-  local name=""
-  local digest=""
-  local index=1
+  local asset_record=""
 
-  names="$(printf '%s' "$RELEASE_JSON" | grep -oE '"name"[[:space:]]*:[[:space:]]*"easytier-linux-[^"]+\.zip"' | sed -nE 's/.*"name"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/p' || true)"
-  digests="$(printf '%s' "$RELEASE_JSON" | grep -oE '"digest"[[:space:]]*:[[:space:]]*"sha256:[^"]+"' | sed -nE 's/.*"digest"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/p' || true)"
+  # Split the compact API response at the beginning of each release asset.
+  # The nested uploader URL does not match this exact prefix, so the name and
+  # digest remain paired within the same asset record.
+  asset_record="$(
+    printf '%s' "$RELEASE_JSON" \
+      | tr -d '\r\n' \
+      | sed 's#},{"url":"https://api.github.com/repos/EasyTier/EasyTier/releases/assets/#\nASSET_START#g' \
+      | grep -F "\"name\":\"${wanted}\"" \
+      || true
+  )"
 
-  while IFS= read -r name; do
-    [ -n "$name" ] || continue
-    digest="$(printf '%s\n' "$digests" | sed -n "${index}p")"
-    if [ "$name" = "$wanted" ]; then
-      printf '%s' "$digest"
-      return 0
-    fi
-    index=$((index + 1))
-  done <<< "$names"
-
-  return 0
+  printf '%s' "$asset_record" \
+    | sed -nE 's/.*"digest":"(sha256:[^"]+)".*/\1/p' \
+    | head -n1
 }
 
 load_release_metadata() {
