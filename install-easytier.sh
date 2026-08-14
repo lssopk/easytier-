@@ -4,7 +4,7 @@ set -Eeuo pipefail
 IFS=$'\n\t'
 umask 077
 
-readonly SCRIPT_VERSION="0.1.0"
+readonly SCRIPT_VERSION="0.1.1"
 readonly EASYTIER_REPOSITORY="EasyTier/EasyTier"
 readonly EASYTIER_RELEASE_API="https://api.github.com/repos/${EASYTIER_REPOSITORY}/releases/latest"
 readonly SERVICE_NAME="easytier-node"
