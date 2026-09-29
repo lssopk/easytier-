@@ -6,6 +6,8 @@ umask 077
 
 readonly SERVICE_NAME="easytier-node"
 readonly CONFIG_DIR="${EASYTIER_MENU_CONFIG_DIR:-/etc/easytier}"
+readonly CONFIG_FILE="${CONFIG_DIR}/easytier.conf"
+readonly CONFIG_BACKUP_DIR="${CONFIG_DIR}/backup"
 readonly FIREWALL_CONFIG="${CONFIG_DIR}/firewall.conf"
 readonly FIREWALL_SYSTEMD_UNIT="/etc/systemd/system/easytier-firewall.service"
 readonly FIREWALL_OPENRC_SCRIPT="/etc/init.d/easytier-firewall"
@@ -117,6 +119,166 @@ ask_toggle() {
       printf '%s' "$current"
       ;;
   esac
+}
+
+toml_escape() {
+  local value="$1"
+  value="${value//\\/\\\\}"
+  value="${value//\"/\\\"}"
+  printf '%s' "$value"
+}
+
+toml_top_level_value() {
+  local key="$1"
+
+  [ -f "$CONFIG_FILE" ] || return 0
+  awk -v key="$key" '
+    /^[[:space:]]*\[/ { exit }
+    $0 ~ "^[[:space:]]*" key "[[:space:]]*=" {
+      value = $0
+      sub("^[[:space:]]*" key "[[:space:]]*=[[:space:]]*", "", value)
+      sub(/[[:space:]]+#.*$/, "", value)
+      gsub(/^[[:space:]]+|[[:space:]]+$/, "", value)
+      print value
+      exit
+    }
+  ' "$CONFIG_FILE"
+}
+
+toml_top_level_string() {
+  local value=""
+  value="$(toml_top_level_value "$1")"
+  case "$value" in
+    \"*\")
+      value="${value:1:${#value}-2}"
+      ;;
+  esac
+  printf '%s' "$value"
+}
+
+toml_set_top_level() {
+  local key="$1"
+  local value="$2"
+  local temp_config=""
+
+  temp_config="$(mktemp "${CONFIG_FILE}.XXXXXX")"
+  awk -v key="$key" -v value="$value" '
+    BEGIN { inserted = 0 }
+    $0 ~ "^[[:space:]]*" key "[[:space:]]*=" { next }
+    /^[[:space:]]*\[/ {
+      if (!inserted) {
+        print key " = " value
+        inserted = 1
+      }
+    }
+    { print }
+    END {
+      if (!inserted) print key " = " value
+    }
+  ' "$CONFIG_FILE" > "$temp_config"
+  chmod 0600 "$temp_config"
+  mv -f "$temp_config" "$CONFIG_FILE"
+}
+
+toml_remove_key() {
+  local key="$1"
+  local temp_config=""
+
+  temp_config="$(mktemp "${CONFIG_FILE}.XXXXXX")"
+  awk -v key="$key" '$0 ~ "^[[:space:]]*" key "[[:space:]]*=" { next } { print }' \
+    "$CONFIG_FILE" > "$temp_config"
+  chmod 0600 "$temp_config"
+  mv -f "$temp_config" "$CONFIG_FILE"
+}
+
+ipv6_provider_enabled() {
+  case "$(toml_top_level_value ipv6_public_addr_provider)" in
+    true|TRUE|True|1|yes|YES|Yes)
+      printf '1'
+      ;;
+    *)
+      printf '0'
+      ;;
+  esac
+}
+
+validate_ipv6_prefix() {
+  local value="$1"
+  local prefix_length=""
+
+  [ -z "$value" ] && return 0
+  [[ "$value" != *[[:space:]]* ]] || die "公网 IPv6 前缀不能包含空格。"
+  [[ "$value" == *:*/* ]] || die "公网 IPv6 前缀必须是类似 2001:db8::/64 的 IPv6 CIDR。"
+  prefix_length="${value##*/}"
+  [[ "$prefix_length" =~ ^[0-9]+$ ]] || die "公网 IPv6 前缀长度必须是 0-128。"
+  prefix_length=$((10#$prefix_length))
+  (( prefix_length <= 128 )) || die "公网 IPv6 前缀长度必须是 0-128。"
+}
+
+backup_easytier_config() {
+  local backup_file=""
+
+  install -d -m 0700 "$CONFIG_BACKUP_DIR"
+  backup_file="${CONFIG_BACKUP_DIR}/easytier.conf.$(date +%Y%m%d%H%M%S)"
+  cp -p "$CONFIG_FILE" "$backup_file"
+  log "旧 EasyTier 配置已备份到：$backup_file"
+}
+
+show_ipv6_provider_config() {
+  local enabled="0"
+  local prefix=""
+
+  printf '\n公网 IPv6 地址 Provider：'
+  if [ ! -f "$CONFIG_FILE" ]; then
+    printf '配置文件不存在（%s）\n' "$CONFIG_FILE"
+    return 0
+  fi
+
+  enabled="$(ipv6_provider_enabled)"
+  prefix="$(toml_top_level_string ipv6_public_addr_prefix)"
+  if [ "$enabled" = "1" ]; then
+    printf '已启用\n'
+    printf '  IPv6 前缀：%s\n' "${prefix:-自动探测}"
+  else
+    printf '未启用\n'
+    [ -n "$prefix" ] && printf '  已保存前缀：%s（启用后生效）\n' "$prefix"
+  fi
+}
+
+configure_ipv6_provider() {
+  local current_enabled="0"
+  local current_prefix=""
+  local new_enabled="0"
+  local new_prefix=""
+
+  [ -f "$CONFIG_FILE" ] || die "找不到 EasyTier 配置文件：$CONFIG_FILE"
+  current_enabled="$(ipv6_provider_enabled)"
+  current_prefix="$(toml_top_level_string ipv6_public_addr_prefix)"
+
+  printf '\n公网 IPv6 Provider 适用于本机拥有可路由公网 IPv6 前缀的节点。\n' >&2
+  printf '没有稳定的 IPv6 前缀时请保持关闭；自动探测失败时可填写 IPv6 CIDR。\n' >&2
+  new_enabled="$(ask_toggle "启用公网 IPv6 地址 Provider" "$current_enabled")"
+  new_prefix="$current_prefix"
+  if [ "$new_enabled" = "1" ]; then
+    new_prefix="$(ask_value "手动 IPv6 前缀（留空保留当前值；输入 auto 使用自动探测）" "$current_prefix")"
+    [ "$new_prefix" = "auto" ] && new_prefix=""
+    validate_ipv6_prefix "$new_prefix"
+  fi
+
+  backup_easytier_config
+  toml_set_top_level ipv6_public_addr_provider "$([ "$new_enabled" = "1" ] && printf true || printf false)"
+  if [ -n "$new_prefix" ]; then
+    toml_set_top_level ipv6_public_addr_prefix "\"$(toml_escape "$new_prefix")\""
+  else
+    toml_remove_key ipv6_public_addr_prefix
+  fi
+  success "公网 IPv6 Provider 配置已更新。"
+
+  if ! service_action restart; then
+    warn "配置已写入，但 EasyTier 服务重启失败，请手动执行：systemctl restart ${SERVICE_NAME}"
+    return 0
+  fi
+  success "EasyTier 已重启，新配置已生效。"
 }
 
 load_firewall_config() {
@@ -550,8 +712,10 @@ print_menu() {
   printf '  8) 配置 LAN/WAN 转发开关\n'
   printf '  9) 应用当前转发规则\n'
   printf ' 10) 关闭菜单管理的转发规则\n'
+  printf ' 11) 配置公网 IPv6 Provider\n'
   printf '  0) 退出\n'
   show_forwarding_config
+  show_ipv6_provider_config
   printf '%b============================================%b\n' "$GREEN" "$RESET"
 }
 
@@ -589,6 +753,7 @@ main() {
       8) configure_forwarding ;;
       9) apply_firewall ;;
       10) disable_managed_forwarding ;;
+      11) configure_ipv6_provider ;;
       0) exit 0 ;;
       *) warn "无效选项：$choice" ;;
     esac
