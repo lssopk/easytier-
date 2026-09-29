@@ -22,6 +22,7 @@ curl -fsSL https://raw.githubusercontent.com/lssopk/easytier-/main/install-easyt
 2. 网络密码
 3. 节点模式
 4. 初始节点地址、协议和端口（默认 TCP+UDP 双协议）
+5. 是否启用公网 IPv6 地址 Provider，以及可选的 IPv6 前缀
 
 脚本不会把密码输出到终端，也不会把网络配置提交到这个仓库。
 
@@ -61,6 +62,25 @@ sudo easytier-menu
 TCP+UDP 双协议会为同一个初始节点配置两条连接，EasyTier 可根据网络可用性和路由情况选择隧道；它不是把两条连接做带宽叠加。如果 UDP 被 NAT、运营商或防火墙阻断，TCP 连接仍可用于加入网络。需要单协议时，在安装提示中输入 `tcp` 或 `udp`。
 
 如果当前服务器本身要作为共享/公网节点，启动时选择“共享/公网节点”。此模式会监听 TCP 和 UDP 端口，默认 11010，并尝试配置本机的 ufw 或 firewalld。VPS 面板中的云防火墙仍需要手动放行相同端口。
+
+## 公网 IPv6 地址 Provider
+
+如果某台路由器或服务器拥有可路由的公网 IPv6 前缀，可以在安装时启用 Provider。脚本会在配置文件顶层写入 `ipv6_public_addr_provider = true`，不会把这个选项误写进 `[flags]`。IPv6 前缀留空时由 EasyTier 自动探测；自动探测不成功时，可填写类似 `2001:db8:100::/64` 的 CIDR 前缀。
+
+安装后的快捷菜单中选择 `11) 配置公网 IPv6 Provider`，即可随时开关、修改前缀。菜单会先备份 `/etc/easytier/easytier.conf`，写入后自动重启 `easytier-node`。
+
+非交互安装可以使用：
+
+```bash
+sudo env \
+  EASYTIER_NETWORK_NAME='my-network' \
+  EASYTIER_NETWORK_SECRET='replace-with-your-secret' \
+  EASYTIER_IPV6_PUBLIC_ADDR_PROVIDER='1' \
+  EASYTIER_IPV6_PUBLIC_ADDR_PREFIX='2001:db8:100::/64' \
+  bash install-easytier.sh --non-interactive
+```
+
+Provider 只应在确实拥有可路由 IPv6 前缀的节点上开启；普通 VPS 只有一个 IPv6 地址、没有可分配前缀时应保持关闭。其他节点若要申请 EasyTier 分配的公网 IPv6 地址，还需要单独启用对应的 `ipv6_public_addr_auto` 选项。
 
 ## 检查和兼容性
 
