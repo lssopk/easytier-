@@ -275,7 +275,7 @@ configure_ipv6_provider() {
   success "公网 IPv6 Provider 配置已更新。"
 
   if ! service_action restart; then
-    warn "配置已写入，但 EasyTier 服务重启失败，请手动执行：systemctl restart ${SERVICE_NAME}"
+    warn "配置已写入，但 EasyTier 服务重启失败，请手动重启：${SERVICE_NAME}"
     return 0
   fi
   success "EasyTier 已重启，新配置已生效。"
