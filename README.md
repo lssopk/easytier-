@@ -22,7 +22,7 @@ curl -fsSL https://raw.githubusercontent.com/lssopk/easytier-/main/install-easyt
 2. 网络密码
 3. 节点模式
 4. 初始节点地址、协议和端口（默认 TCP+UDP 双协议）
-5. 是否启用公网 IPv6 地址 Provider，以及可选的 IPv6 前缀
+5. 安装完成后可通过快捷菜单填写额外启动参数（可留空）
 
 脚本不会把密码输出到终端，也不会把网络配置提交到这个仓库。
 
@@ -63,24 +63,27 @@ TCP+UDP 双协议会为同一个初始节点配置两条连接，EasyTier 可根
 
 如果当前服务器本身要作为共享/公网节点，启动时选择“共享/公网节点”。此模式会监听 TCP 和 UDP 端口，默认 11010，并尝试配置本机的 ufw 或 firewalld。VPS 面板中的云防火墙仍需要手动放行相同端口。
 
-## 公网 IPv6 地址 Provider
+## 额外启动参数
 
-如果某台路由器或服务器拥有可路由的公网 IPv6 前缀，可以在安装时启用 Provider。脚本会在配置文件顶层写入 `ipv6_public_addr_provider = true`，不会把这个选项误写进 `[flags]`。IPv6 前缀留空时由 EasyTier 自动探测；自动探测不成功时，可填写类似 `2001:db8:100::/64` 的 CIDR 前缀。
+安装器支持通过 `--extra-start-args` 或环境变量 `EASYTIER_EXTRA_START_ARGS` 追加 `easytier-core` 启动参数。安装完成后，也可以在快捷菜单中选择 `11) 配置额外启动参数并重启`，填写完成后自动重启 `easytier-node`。
 
-安装后的快捷菜单中选择 `11) 配置公网 IPv6 Provider`，即可随时开关、修改前缀。菜单会先备份 `/etc/easytier/easytier.conf`，写入后自动重启 `easytier-node`。
+多个参数用空格分隔，需要传值时建议使用 `--参数=值` 格式。例如需要手动启用 EasyTier 的公网 IPv6 Provider 时，可以填写：
 
-非交互安装可以使用：
+```text
+--ipv6-public-addr-provider --ipv6-public-addr-prefix=2001:db8:100::/64
+```
+
+参数保存于 `/etc/easytier/extra-start-args.conf`，权限为 600；输入 `clear` 可以清空。菜单首次运行时会移除旧版本写入的 Provider 配置项，并自动备份原配置。
+
+非交互安装示例：
 
 ```bash
 sudo env \
   EASYTIER_NETWORK_NAME='my-network' \
   EASYTIER_NETWORK_SECRET='replace-with-your-secret' \
-  EASYTIER_IPV6_PUBLIC_ADDR_PROVIDER='1' \
-  EASYTIER_IPV6_PUBLIC_ADDR_PREFIX='2001:db8:100::/64' \
+  EASYTIER_EXTRA_START_ARGS='--some-flag --some-value=value' \
   bash install-easytier.sh --non-interactive
 ```
-
-Provider 只应在确实拥有可路由 IPv6 前缀的节点上开启；普通 VPS 只有一个 IPv6 地址、没有可分配前缀时应保持关闭。其他节点若要申请 EasyTier 分配的公网 IPv6 地址，还需要单独启用对应的 `ipv6_public_addr_auto` 选项。
 
 ## 检查和兼容性
 
