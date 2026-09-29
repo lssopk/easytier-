@@ -4,7 +4,7 @@ set -Eeuo pipefail
 IFS=$'\n\t'
 umask 077
 
-readonly SCRIPT_VERSION="0.2.1"
+readonly SCRIPT_VERSION="0.3.0"
 readonly EASYTIER_REPOSITORY="EasyTier/EasyTier"
 readonly EASYTIER_RELEASE_API="https://api.github.com/repos/${EASYTIER_REPOSITORY}/releases/latest"
 readonly SERVICE_NAME="easytier-node"
@@ -43,8 +43,16 @@ PEER_PROTOCOL="${EASYTIER_PEER_PROTOCOL:-tcp+udp}"
 NODE_ROLE="${EASYTIER_ROLE:-client}"
 LISTEN_PORT="${EASYTIER_LISTEN_PORT:-11010}"
 NODE_HOSTNAME="${EASYTIER_HOSTNAME:-}"
+IPV6_PUBLIC_ADDR_PROVIDER="${EASYTIER_IPV6_PUBLIC_ADDR_PROVIDER:-0}"
+IPV6_PUBLIC_ADDR_PREFIX="${EASYTIER_IPV6_PUBLIC_ADDR_PREFIX:-}"
 ROLE_EXPLICIT=0
+IPV6_PROVIDER_EXPLICIT=0
 [ -n "${EASYTIER_ROLE:-}" ] && ROLE_EXPLICIT=1
+[ "${EASYTIER_IPV6_PUBLIC_ADDR_PROVIDER+x}" = x ] && IPV6_PROVIDER_EXPLICIT=1
+if [ "${EASYTIER_IPV6_PUBLIC_ADDR_PREFIX+x}" = x ] && [ -n "$IPV6_PUBLIC_ADDR_PREFIX" ]; then
+  [ "$IPV6_PROVIDER_EXPLICIT" -eq 1 ] || IPV6_PUBLIC_ADDR_PROVIDER=1
+  IPV6_PROVIDER_EXPLICIT=1
+fi
 
 OS_ID="unknown"
 OS_VERSION=""
@@ -91,6 +99,12 @@ EasyTier Linux 一键安装器
   --role client|relay     普通节点或共享/公网节点，默认 client
   --listen-port PORT      relay 模式监听端口，默认 11010
   --hostname NAME         EasyTier 虚拟网络中的主机名
+  --ipv6-public-addr-provider
+                          启用公网 IPv6 地址 Provider
+  --no-ipv6-public-addr-provider
+                          关闭公网 IPv6 地址 Provider
+  --ipv6-public-addr-prefix PREFIX
+                          指定 Provider 使用的 IPv6 前缀；不填则自动探测
   -h, --help              显示帮助
 
 非交互模式示例:
@@ -99,6 +113,8 @@ EasyTier Linux 一键安装器
     EASYTIER_NETWORK_SECRET='change-me' \
     EASYTIER_PEER_HOST='relay.example.com' \
     EASYTIER_PEER_PORT='11010' \
+    EASYTIER_IPV6_PUBLIC_ADDR_PROVIDER='1' \
+    EASYTIER_IPV6_PUBLIC_ADDR_PREFIX='2001:db8:100::/64' \
     bash install-easytier.sh --non-interactive
 EOF
 }
@@ -199,6 +215,21 @@ parse_args() {
       --hostname)
         [ "$#" -ge 2 ] || die "--hostname 需要一个值"
         NODE_HOSTNAME="$2"
+        shift
+        ;;
+      --ipv6-public-addr-provider)
+        IPV6_PUBLIC_ADDR_PROVIDER=1
+        IPV6_PROVIDER_EXPLICIT=1
+        ;;
+      --no-ipv6-public-addr-provider)
+        IPV6_PUBLIC_ADDR_PROVIDER=0
+        IPV6_PROVIDER_EXPLICIT=1
+        ;;
+      --ipv6-public-addr-prefix)
+        [ "$#" -ge 2 ] || die "--ipv6-public-addr-prefix 需要一个值"
+        IPV6_PUBLIC_ADDR_PREFIX="$2"
+        IPV6_PUBLIC_ADDR_PROVIDER=1
+        IPV6_PROVIDER_EXPLICIT=1
         shift
         ;;
       -h|--help)
@@ -619,6 +650,19 @@ validate_port() {
   (( numeric >= 1 && numeric <= 65535 )) || die "${label}必须是 1-65535 的数字。"
 }
 
+validate_ipv6_prefix() {
+  local value="$1"
+  local prefix_length=""
+
+  [ -z "$value" ] && return 0
+  [[ "$value" != *[[:space:]]* ]] || die "公网 IPv6 前缀不能包含空格。"
+  [[ "$value" == *:*/* ]] || die "公网 IPv6 前缀必须是类似 2001:db8::/64 的 IPv6 CIDR。"
+  prefix_length="${value##*/}"
+  [[ "$prefix_length" =~ ^[0-9]+$ ]] || die "公网 IPv6 前缀长度必须是 0-128。"
+  prefix_length=$((10#$prefix_length))
+  (( prefix_length <= 128 )) || die "公网 IPv6 前缀长度必须是 0-128。"
+}
+
 toml_escape() {
   local value="$1"
   value="${value//\\/\\\\}"
@@ -672,6 +716,26 @@ collect_network_config() {
       die "--role 只能是 client 或 relay。"
     fi
     die "节点模式只能是 client 或 relay。"
+  fi
+
+  if [ "$IPV6_PROVIDER_EXPLICIT" -eq 0 ] && [ "$NON_INTERACTIVE" -eq 0 ]; then
+    if ask_yes_no "本机是否提供可路由的公网 IPv6 前缀（启用 Provider）" "n"; then
+      IPV6_PUBLIC_ADDR_PROVIDER=1
+    else
+      IPV6_PUBLIC_ADDR_PROVIDER=0
+    fi
+  fi
+  case "$IPV6_PUBLIC_ADDR_PROVIDER" in
+    0|1) ;;
+    *) die "EASYTIER_IPV6_PUBLIC_ADDR_PROVIDER 必须是 0 或 1。" ;;
+  esac
+  if [ "$IPV6_PUBLIC_ADDR_PROVIDER" -eq 1 ] && [ "$NON_INTERACTIVE" -eq 0 ]; then
+    IPV6_PUBLIC_ADDR_PREFIX="$(ask_value "公网 IPv6 前缀（留空自动探测；已有值可直接回车保留）" "$IPV6_PUBLIC_ADDR_PREFIX")"
+  fi
+  if [ "$IPV6_PUBLIC_ADDR_PROVIDER" -eq 1 ]; then
+    validate_ipv6_prefix "$IPV6_PUBLIC_ADDR_PREFIX"
+  else
+    IPV6_PUBLIC_ADDR_PREFIX=""
   fi
 
   if [ "$NODE_ROLE" = "relay" ]; then
@@ -817,7 +881,12 @@ write_config() {
     fi
     printf 'mapped_listeners = []\n'
     printf 'exit_nodes = []\n'
-    printf 'rpc_portal = "127.0.0.1:%s"\n\n' "$RPC_PORT"
+    printf 'rpc_portal = "127.0.0.1:%s"\n' "$RPC_PORT"
+    printf 'ipv6_public_addr_provider = %s\n' "$([ "$IPV6_PUBLIC_ADDR_PROVIDER" -eq 1 ] && printf true || printf false)"
+    if [ "$IPV6_PUBLIC_ADDR_PROVIDER" -eq 1 ] && [ -n "$IPV6_PUBLIC_ADDR_PREFIX" ]; then
+      printf 'ipv6_public_addr_prefix = "%s"\n' "$(toml_escape "$IPV6_PUBLIC_ADDR_PREFIX")"
+    fi
+    printf '\n'
     printf '[network_identity]\n'
     printf 'network_name = "%s"\n' "$escaped_network"
     printf 'network_secret = "%s"\n\n' "$escaped_secret"
@@ -1039,6 +1108,11 @@ show_summary() {
   printf '\n%b================ EasyTier 安装完成 ================%b\n' "$GREEN" "$RESET"
   printf '版本：%s\n' "$CORE_VERSION"
   printf '模式：%s\n' "$([ "$NODE_ROLE" = "relay" ] && printf '共享/公网节点' || printf '普通加入节点')"
+  if [ "$IPV6_PUBLIC_ADDR_PROVIDER" -eq 1 ]; then
+    printf '公网 IPv6 Provider：已启用（%s）\n' "${IPV6_PUBLIC_ADDR_PREFIX:-自动探测前缀}"
+  else
+    printf '公网 IPv6 Provider：未启用\n'
+  fi
   printf '网络名称：%s\n' "$NETWORK_NAME"
   if [ -n "$PEER_URI" ]; then
     printf '初始节点：%s\n' "$PEER_URI"
