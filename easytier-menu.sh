@@ -5,6 +5,11 @@ IFS=$'\n\t'
 umask 077
 
 readonly SERVICE_NAME="easytier-node"
+readonly INSTALL_DIR="${EASYTIER_MENU_INSTALL_DIR:-/opt/easytier}"
+readonly SYSTEMD_UNIT="/etc/systemd/system/easytier-node.service"
+readonly OPENRC_SCRIPT="/etc/init.d/easytier-node"
+readonly MENU_PATH="/usr/local/bin/easytier-menu"
+readonly SYSCTL_FORWARD_FILE="/etc/sysctl.d/99-easytier-forward.conf"
 readonly CONFIG_DIR="${EASYTIER_MENU_CONFIG_DIR:-/etc/easytier}"
 readonly CONFIG_FILE="${CONFIG_DIR}/easytier.conf"
 readonly CONFIG_BACKUP_DIR="${CONFIG_DIR}/backup"
@@ -71,6 +76,29 @@ read_tty() {
     IFS= read -r answer || true
   fi
   printf '%s' "$answer"
+}
+
+confirm_uninstall() {
+  local answer=""
+
+  printf '%s\n' '即将卸载 EasyTier。将删除服务、程序、配置、菜单和脚本管理的转发规则。' >&2
+  printf '%s' '请输入 DELETE 确认： ' >&2
+  answer="$(read_tty)"
+  if [ "$answer" != "DELETE" ]; then
+    warn "未输入 DELETE，已取消卸载。"
+    return 1
+  fi
+  printf '%s' '最后确认删除 EasyTier 配置和程序？[y/N]： ' >&2
+  answer="$(read_tty)"
+  case "$answer" in
+    [Yy]|[Yy][Ee][Ss])
+      return 0
+      ;;
+    *)
+      warn '已取消卸载。'
+      return 1
+      ;;
+  esac
 }
 
 ask_value() {
@@ -647,6 +675,40 @@ disable_managed_forwarding() {
   success "已关闭菜单管理的转发规则；其他系统防火墙规则不受影响。"
 }
 
+uninstall_easytier() {
+  confirm_uninstall || return 0
+
+  log "正在停止 EasyTier 服务并清理脚本管理的规则。"
+  if command -v systemctl >/dev/null 2>&1; then
+    systemctl disable --now easytier-firewall.service >/dev/null 2>&1 || true
+    systemctl disable --now "$SERVICE_NAME.service" >/dev/null 2>&1 || true
+  fi
+  if command -v rc-service >/dev/null 2>&1; then
+    rc-service easytier-firewall stop >/dev/null 2>&1 || true
+    rc-service "$SERVICE_NAME" stop >/dev/null 2>&1 || true
+    command -v rc-update >/dev/null 2>&1 && rc-update del easytier-firewall default >/dev/null 2>&1 || true
+    command -v rc-update >/dev/null 2>&1 && rc-update del "$SERVICE_NAME" default >/dev/null 2>&1 || true
+  fi
+
+  if command -v nft >/dev/null 2>&1; then
+    nft delete table inet "$NFT_TABLE" >/dev/null 2>&1 || true
+  fi
+  remove_iptables_rules iptables
+  remove_iptables_rules ip6tables
+  rm -f -- "$SYSCTL_FORWARD_FILE"
+
+  rm -f -- "$SYSTEMD_UNIT" "$FIREWALL_SYSTEMD_UNIT" "$OPENRC_SCRIPT" "$FIREWALL_OPENRC_SCRIPT"
+  rm -f -- "$MENU_PATH" /usr/local/bin/easytier-core /usr/local/bin/easytier-cli
+  rm -f -- "/var/log/$SERVICE_NAME.log" "/var/log/$SERVICE_NAME.err" "/run/$SERVICE_NAME.pid"
+  rm -rf -- "$INSTALL_DIR" "$CONFIG_DIR"
+
+  if command -v systemctl >/dev/null 2>&1; then
+    systemctl daemon-reload >/dev/null 2>&1 || true
+  fi
+  success 'EasyTier 已卸载。运行中的其他系统转发设置未被强制重置。'
+  exit 0
+}
+
 service_action() {
   local action="$1"
   case "$(init_system)" in
@@ -713,6 +775,7 @@ print_menu() {
   printf '  9) 应用当前转发规则\n'
   printf ' 10) 关闭菜单管理的转发规则\n'
   printf ' 11) 配置公网 IPv6 Provider\n'
+  printf ' 12) 卸载 EasyTier\n'
   printf '  0) 退出\n'
   show_forwarding_config
   show_ipv6_provider_config
@@ -728,8 +791,12 @@ main() {
       apply_firewall
       return 0
       ;;
+    --uninstall)
+      uninstall_easytier
+      return 0
+      ;;
     --help|-h)
-      printf '用法：easytier-menu [--apply-firewall]\n'
+      printf '用法：easytier-menu [--apply-firewall|--uninstall]\n'
       return 0
       ;;
     "")
@@ -754,6 +821,7 @@ main() {
       9) apply_firewall ;;
       10) disable_managed_forwarding ;;
       11) configure_ipv6_provider ;;
+      12) uninstall_easytier ;;
       0) exit 0 ;;
       *) warn "无效选项：$choice" ;;
     esac
