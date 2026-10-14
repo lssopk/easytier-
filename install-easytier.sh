@@ -19,6 +19,9 @@ readonly MENU_RAW_URL="https://raw.githubusercontent.com/lssopk/easytier-/main/e
 readonly FIREWALL_CONFIG="${EASYTIER_CONFIG_DIR:-/etc/easytier}/firewall.conf"
 readonly FIREWALL_SYSTEMD_UNIT="/etc/systemd/system/easytier-firewall.service"
 readonly FIREWALL_OPENRC_SCRIPT="/etc/init.d/easytier-firewall"
+readonly NFT_TABLE="easytier_forward"
+readonly IPTABLES_CHAIN="EASYTIER_FORWARD"
+readonly SYSCTL_FORWARD_FILE="/etc/sysctl.d/99-easytier-forward.conf"
 
 RED=$'\033[1;31m'
 GREEN=$'\033[1;32m'
@@ -32,6 +35,7 @@ FORCE_UPDATE=0
 ALLOW_EMPTY_SECRET=0
 NO_PEER=0
 MENU_REQUESTED=0
+UNINSTALL_REQUESTED=0
 AUTO_FIREWALL="${EASYTIER_AUTO_FIREWALL:-1}"
 GITHUB_PROXY="${EASYTIER_GITHUB_PROXY:-}"
 
@@ -86,6 +90,7 @@ EasyTier Linux 一键安装器
 选项:
   --non-interactive       使用环境变量运行，不进行交互式提问
   --menu                  打开已安装的 EasyTier 快捷启动菜单
+  --uninstall             卸载 EasyTier、服务、配置和快捷菜单
   --force-update          即使已有 EasyTier 二进制也下载最新版本
   --skip-deps             不自动安装 curl/unzip/iproute2 等依赖
   --allow-empty-secret    允许空网络密码（不推荐）
@@ -158,6 +163,9 @@ parse_args() {
         ;;
       --menu)
         MENU_REQUESTED=1
+        ;;
+      --uninstall)
+        UNINSTALL_REQUESTED=1
         ;;
       --force-update)
         FORCE_UPDATE=1
@@ -310,6 +318,57 @@ ask_yes_no() {
   fi
   answer="${answer:-$default_answer}"
   [[ "$answer" =~ ^[Yy]([Ee][Ss])?$ ]]
+}
+
+remove_uninstall_iptables_rules() {
+  local ipt="${1:-iptables}"
+  local count=0
+
+  command -v "$ipt" >/dev/null 2>&1 || return 0
+  while "$ipt" -C FORWARD -j "$IPTABLES_CHAIN" >/dev/null 2>&1; do
+    "$ipt" -D FORWARD -j "$IPTABLES_CHAIN" >/dev/null 2>&1 || break
+    count=$((count + 1))
+    [ "$count" -lt 100 ] || break
+  done
+  "$ipt" -F "$IPTABLES_CHAIN" >/dev/null 2>&1 || true
+  "$ipt" -X "$IPTABLES_CHAIN" >/dev/null 2>&1 || true
+}
+
+uninstall_installation() {
+  [ "$NON_INTERACTIVE" -eq 0 ] || die "--uninstall 需要交互确认；请不要在 --non-interactive 模式下执行。"
+  ask_yes_no "确认卸载 EasyTier 及其配置、服务和快捷菜单" "n" || { log "已取消卸载。"; return 0; }
+  ask_yes_no "最后确认：永久删除 ${INSTALL_DIR} 和 ${CONFIG_DIR}" "n" || { log "已取消卸载。"; return 0; }
+
+  log '正在停止 EasyTier 服务并清理脚本管理的规则。'
+  if command -v systemctl >/dev/null 2>&1; then
+    systemctl disable --now easytier-firewall.service >/dev/null 2>&1 || true
+    systemctl disable --now "$SERVICE_NAME.service" >/dev/null 2>&1 || true
+  fi
+  if command -v rc-service >/dev/null 2>&1; then
+    rc-service easytier-firewall stop >/dev/null 2>&1 || true
+    rc-service "$SERVICE_NAME" stop >/dev/null 2>&1 || true
+    command -v rc-update >/dev/null 2>&1 && rc-update del easytier-firewall default >/dev/null 2>&1 || true
+    command -v rc-update >/dev/null 2>&1 && rc-update del "$SERVICE_NAME" default >/dev/null 2>&1 || true
+  fi
+
+  if command -v nft >/dev/null 2>&1; then
+    nft delete table inet "$NFT_TABLE" >/dev/null 2>&1 || true
+  fi
+  remove_uninstall_iptables_rules iptables
+  remove_uninstall_iptables_rules ip6tables
+  rm -f -- "$SYSCTL_FORWARD_FILE"
+
+  rm -f -- "$SYSTEMD_UNIT" "$FIREWALL_SYSTEMD_UNIT" "$OPENRC_SCRIPT" "$FIREWALL_OPENRC_SCRIPT"
+  rm -f -- "$MENU_PATH" /usr/local/bin/easytier-core /usr/local/bin/easytier-cli
+  rm -f -- "/var/log/$SERVICE_NAME.log" "/var/log/$SERVICE_NAME.err" "/run/$SERVICE_NAME.pid"
+  case "$INSTALL_DIR" in ""|"/"|"/opt"|"/usr"|"/usr/local") die "拒绝删除不安全的安装目录：$INSTALL_DIR" ;; esac
+  case "$CONFIG_DIR" in ""|"/"|"/etc") die "拒绝删除不安全的配置目录：$CONFIG_DIR" ;; esac
+  rm -rf -- "$INSTALL_DIR" "$CONFIG_DIR"
+
+  if command -v systemctl >/dev/null 2>&1; then
+    systemctl daemon-reload >/dev/null 2>&1 || true
+  fi
+  success 'EasyTier 已卸载。运行中的其他系统转发设置未被强制重置。'
 }
 
 detect_os() {
@@ -1156,6 +1215,11 @@ show_summary() {
 
 main() {
   parse_args "$@"
+  if [ "$UNINSTALL_REQUESTED" -eq 1 ]; then
+    require_root
+    uninstall_installation
+    return 0
+  fi
   if [ "$MENU_REQUESTED" -eq 1 ]; then
     [ -x "$MENU_PATH" ] || die "尚未安装快捷菜单：$MENU_PATH"
     exec "$MENU_PATH"
