@@ -34,7 +34,25 @@ curl -fsSL https://raw.githubusercontent.com/lssopk/easytier-/main/install-easyt
 sudo easytier-menu
 ```
 
-菜单可以启动、停止、重启 EasyTier，查看状态、节点、对等节点和实时日志，也可以进入 LAN/WAN 转发配置。
+菜单可以启动、停止、重启 EasyTier，查看状态、节点、对等节点和实时日志，也可以进入 LAN/WAN 转发配置；新增 `12) 卸载 EasyTier`，会在二次确认后清理服务、程序、配置、菜单和脚本管理的转发规则。
+
+## 卸载 EasyTier
+
+安装完成后可以通过快捷菜单卸载：
+
+```bash
+sudo easytier-menu
+```
+
+选择 `12) 卸载 EasyTier`，按提示完成二次确认。
+
+也可以直接使用安装器：
+
+```bash
+sudo bash install-easytier.sh --uninstall
+```
+
+卸载只清理本脚本创建的 EasyTier 服务、程序、配置、快捷菜单、管理的 nftables/iptables 规则和转发 sysctl 文件；不会自动撤销 ufw/firewalld 中可能已经存在的端口放行规则，也不会强制把其他程序使用的运行时转发开关关闭。
 
 转发配置支持四个独立开关：
 
